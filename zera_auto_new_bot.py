@@ -10,7 +10,7 @@ import json
 import logging
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -106,64 +106,87 @@ class BotConfig:
 EMOJI_CAR = "🚗"
 EMOJI_LIGHTNING = "⚡"
 EMOJI_BATTERY = "🔋"
-EMOJI_SPEED = "🏎"
-EMOJI_RANGE = "📍"
-EMOJI_FIRE = "🔥"
-EMOJI_STAR = "⭐"
 EMOJI_MONEY = "💰"
-EMOJI_PHONE = "📞"
+EMOJI_PHONE = "📱"
 EMOJI_CHECK = "✅"
-EMOJI_ARROW = "➡️"
 EMOJI_WRENCH = "🔧"
-EMOJI_GLOBE = "🌍"
-EMOJI_SPARKLES = "✨"
-EMOJI_CROWN = "👑"
+EMOJI_STAR = "⭐"
 EMOJI_ROCKET = "🚀"
 
 # ---------------------------------------------------------------------------
-# Constants — GPT prompts
+# Constants — non-bold label words for caption entities
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT_ANALYZER = """Ты — эксперт-оценщик автомобилей. Твоя задача — проанализировать фотографии автомобиля и вернуть строго JSON-ответ.
+NON_BOLD_WORDS_ICE = {"двигатель", "пробег", "комплектация", "состояние"}
+NON_BOLD_WORDS_EV = {"электромотор", "батарея", "запас", "хода", "пробег", "кузов", "комплектация", "состояние", "заявленный"}
 
-Правила:
-1. Определи марку, модель, год выпуска, комплектацию.
-2. Определи тип автомобиля: "electric" если это электромобиль, иначе "ice" (ДВС).
-3. Для электромобиля определи: мощность двигателя (л.с.), ёмкость батареи (кВт·ч), запас хода (км), тип кузова.
-4. Для ДВС: объём двигателя (например "1.5T"), мощность (л.с.), тип кузова, тип топлива.
-5. Если на фото есть VIN-номер или номерной знак — установи has_vin=true.
-6. Придумай уникальный слоган (1–2 предложения) для рекламного поста.
-7. Определи примерную рыночную цену в рублях (только число, без пробелов и символов).
-8. Перечисли ключевые особенности (до 5 пунктов).
+# ---------------------------------------------------------------------------
+# Constants — GPT prompt
+# ---------------------------------------------------------------------------
 
-Верни ТОЛЬКО валидный JSON без markdown-блоков в следующем формате:
+GPT_SYSTEM_PROMPT = """
+═══════════════════════════════════════════════════════════════════════════════
+0. ОПРЕДЕЛЕНИЕ ТИПА АВТОМОБИЛЯ (КРИТИЧЕСКИ ВАЖНО!)
+═══════════════════════════════════════════════════════════════════════════════
+
+🔋 ПРАВИЛО #0: ОПРЕДЕЛИ ТИП АВТОМОБИЛЯ!
+
+КЛЮЧЕВЫЕ СЛОВА для ЭЛЕКТРОМОБИЛЯ:
+- "электромобиль", "электро", "⚡", "EV"
+- "батарейка", "батарея", "kWh", "kw"
+- "запас хода", "км хода"
+
+ЕСЛИ ЭТО ЭЛЕКТРОМОБИЛЬ:
+- Установи `is_electric: true`
+- Заполни: motor_power_hp, battery_kwh, range_km, body_type
+- НЕ заполняй поле `engine`
+
+ЕСЛИ ЭТО ДВС:
+- Установи `is_electric: false`
+- Заполняй как обычно: engine, power_hp
+
+═══════════════════════════════════════════════════════════════════════════════
+1. ОСНОВНОЙ АНАЛИЗ
+═══════════════════════════════════════════════════════════════════════════════
+
+Ты — эксперт по продаже автомобилей. Анализируй фотографии и возвращай ТОЛЬКО валидный JSON.
+
+Определи по фото:
+- Марку, модель, год выпуска, комплектацию и состояние
+- Для ДВС: тип двигателя (объём, тип коробки, топливо)
+- Для электромобиля: мощность мотора, ёмкость батареи, запас хода, тип кузова
+- Пробег (если виден на одометре), иначе оставь пустым
+- Индексы фотографий (начиная с 0), на которых виден VIN-номер или гос. номер
+
+Придумай короткое название автомобиля (марка + модель + год + ключевые данные).
+Придумай рекламный слоган (1–2 предложения).
+Оцени рыночную стоимость в рублях для Уссурийска и для Москвы.
+
+Верни ТОЛЬКО валидный JSON без markdown-блоков:
 {
-  "vehicle_type": "ice" | "electric",
-  "make": "...",
-  "model": "...",
-  "year": 2024,
-  "trim": "...",
-  "body_type": "...",
-  "engine": "...",
-  "power_hp": 150,
-  "fuel_type": "...",
+  "is_electric": false,
+  "title": "Toyota Camry 2020 2.5 AT",
+  "slogan": "Рекламный слоган",
+  "engine": "2.5 AT (бензин)",
+  "mileage": "50 000 км",
+  "trim": "Prestige",
+  "condition": "Хорошее",
+  "price_ussuriisk": 2500000,
+  "price_moscow": 2700000,
+  "power_hp": 181,
+  "year": 2020,
+  "flags": "не бита, не крашена",
+  "vin_photo_indices": [],
+  "notes": "",
+  "motor_power_hp": null,
   "battery_kwh": null,
   "range_km": null,
-  "price_rub": 2500000,
-  "slogan": "...",
-  "features": ["...", "..."],
-  "has_vin": false
+  "body_type": ""
 }
-Для электромобилей engine = null, fuel_type = null; battery_kwh и range_km обязательны.
-Для ДВС battery_kwh = null, range_km = null.
-"""
 
-SLOGAN_STYLE_EV = (
-    "Слоган должен подчёркивать экологичность, инновации и свободу движения без АЗС."
-)
-SLOGAN_STYLE_ICE = (
-    "Слоган должен подчёркивать динамику, надёжность и удовольствие от вождения."
-)
+Для электромобилей: engine = "", power_hp = null; motor_power_hp, battery_kwh, range_km, body_type — обязательны.
+Для ДВС: motor_power_hp = null, battery_kwh = null, range_km = null, body_type = "".
+"""
 
 # ---------------------------------------------------------------------------
 # UTF-16 entity helpers
@@ -191,57 +214,49 @@ def utf16_offset(text: str, char_offset: int) -> int:
 
 @dataclass
 class CarInfo:
-    vehicle_type: str = "ice"  # "ice" | "electric"
-    make: str = ""
-    model: str = ""
-    year: int = 0
+    title: str = ""
+    slogan: str = ""
+    engine: str = ""
+    mileage: str = ""
     trim: str = ""
-    body_type: str = ""
-    # ICE fields
-    engine: Optional[str] = None
+    condition: str = ""
+    price_ussuriisk: Optional[int] = None
+    price_moscow: Optional[int] = None
     power_hp: Optional[int] = None
-    fuel_type: Optional[str] = None
-    # EV fields
+    year: Optional[int] = None
+    flags: str = ""
+    vin_photo_indices: List[int] = None
+    notes: str = ""
+
+    # NEW EV FIELDS ONLY:
+    is_electric: bool = False
+    motor_power_hp: Optional[int] = None
     battery_kwh: Optional[float] = None
     range_km: Optional[int] = None
-    # Common
-    price_rub: int = 0
-    slogan: str = ""
-    features: List[str] = field(default_factory=list)
-    has_vin: bool = False
+    body_type: str = ""
 
-    @property
-    def is_electric(self) -> bool:
-        return self.vehicle_type == "electric"
+    def __post_init__(self):
+        if self.vin_photo_indices is None:
+            self.vin_photo_indices = []
 
-    def display_price(self, addition: int) -> str:
-        total = self.price_rub + addition
-        # Format with spaces as thousands separator
-        return f"{total:,}".replace(",", " ") + " ₽"
 
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "CarInfo":
-        info = cls()
-        info.vehicle_type = data.get("vehicle_type", "ice")
-        info.make = data.get("make", "")
-        info.model = data.get("model", "")
-        info.year = int(data.get("year") or 0)
-        info.trim = data.get("trim", "")
-        info.body_type = data.get("body_type", "")
-        info.engine = data.get("engine")
-        raw_hp = data.get("power_hp")
-        info.power_hp = int(raw_hp) if raw_hp is not None else None
-        info.fuel_type = data.get("fuel_type")
-        raw_bat = data.get("battery_kwh")
-        info.battery_kwh = float(raw_bat) if raw_bat is not None else None
-        raw_range = data.get("range_km")
-        info.range_km = int(raw_range) if raw_range is not None else None
-        raw_price = data.get("price_rub", 0)
-        info.price_rub = int(raw_price) if raw_price else 0
-        info.slogan = data.get("slogan", "")
-        info.features = list(data.get("features") or [])
-        info.has_vin = bool(data.get("has_vin", False))
-        return info
+# ---------------------------------------------------------------------------
+# Safe type helpers
+# ---------------------------------------------------------------------------
+
+
+def _safe_int(val: Any) -> Optional[int]:
+    try:
+        return int(val) if val is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_float(val: Any) -> Optional[float]:
+    try:
+        return float(val) if val is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -266,7 +281,7 @@ class ChatGPTAnalyzer:
     def _encode_image(image_bytes: bytes) -> str:
         return base64.b64encode(image_bytes).decode("utf-8")
 
-    async def analyze_photos(
+    async def analyze_car(
         self,
         photos_bytes: List[bytes],
         extra_hint: str = "",
@@ -275,7 +290,7 @@ class ChatGPTAnalyzer:
         if not photos_bytes:
             return None
 
-        system_text = SYSTEM_PROMPT_ANALYZER
+        system_text = GPT_SYSTEM_PROMPT
         if extra_hint:
             system_text += "\n\nДополнительная информация от пользователя: " + extra_hint
 
@@ -327,116 +342,135 @@ class ChatGPTAnalyzer:
             # Strip markdown code fences if present
             raw_text = re.sub(r"```(?:json)?", "", raw_text).strip().strip("`").strip()
             parsed = json.loads(raw_text)
-            return CarInfo.from_dict(parsed)
         except (KeyError, IndexError, json.JSONDecodeError, ValueError) as exc:
             logger.error("Failed to parse GPT response: %s", exc)
             logger.debug("Raw GPT response: %s", data)
             return None
 
+        is_electric = parsed.get("is_electric", False)
+
+        car_info = CarInfo(
+            title=parsed.get("title", ""),
+            slogan=parsed.get("slogan", ""),
+            engine=parsed.get("engine", ""),
+            mileage=parsed.get("mileage", ""),
+            trim=parsed.get("trim", ""),
+            condition=parsed.get("condition", ""),
+            price_ussuriisk=_safe_int(parsed.get("price_ussuriisk")),
+            price_moscow=_safe_int(parsed.get("price_moscow")),
+            power_hp=_safe_int(parsed.get("power_hp")),
+            year=_safe_int(parsed.get("year")),
+            flags=parsed.get("flags", ""),
+            vin_photo_indices=list(parsed.get("vin_photo_indices") or []),
+            notes=parsed.get("notes", ""),
+            is_electric=is_electric,
+        )
+
+        if is_electric:
+            car_info.motor_power_hp = _safe_int(parsed.get("motor_power_hp"))
+            car_info.battery_kwh = _safe_float(parsed.get("battery_kwh"))
+            car_info.range_km = _safe_int(parsed.get("range_km"))
+            car_info.body_type = parsed.get("body_type", "")
+
+        return car_info
+
 
 # ---------------------------------------------------------------------------
-# Text formatting helpers
+# Caption builder with Telegram entities
 # ---------------------------------------------------------------------------
 
 
-def _feature_lines(features: List[str]) -> str:
-    return "\n".join(f"  {EMOJI_CHECK} {f}" for f in features) if features else ""
+def build_caption_with_entities(
+    ci: CarInfo, manager_handle: str, rub_bonus: int
+):
+    """Build post caption text and list of Telegram MessageEntity dicts."""
+    # Each segment is (text, is_bold)
+    segments: List[tuple] = []
 
+    # Title — bold
+    title_prefix = f"{EMOJI_LIGHTNING} " if ci.is_electric else f"{EMOJI_CAR} "
+    segments.append((title_prefix + ci.title + "\n", True))
 
-def format_post_ev(car: CarInfo, price_addition: int, contact: str) -> str:
-    """Format a Telegram post for an electric vehicle."""
-    title = f"{EMOJI_LIGHTNING} {car.year} {car.make} {car.model}"
-    if car.trim:
-        title += f" {car.trim}"
+    # Slogan
+    if ci.slogan:
+        segments.append(("\n" + ci.slogan + "\n", False))
 
-    lines = [
-        title,
-        "",
-        f"{EMOJI_SPARKLES} {car.slogan}",
-        "",
-        f"{EMOJI_BATTERY} Батарея: {car.battery_kwh} кВт·ч" if car.battery_kwh else "",
-        f"{EMOJI_RANGE} Запас хода: {car.range_km} км" if car.range_km else "",
-        f"{EMOJI_SPEED} Мощность: {car.power_hp} л.с." if car.power_hp else "",
-        f"{EMOJI_CAR} Кузов: {car.body_type}" if car.body_type else "",
-        "",
-    ]
+    segments.append(("\n", False))
 
-    if car.features:
-        lines.append(f"{EMOJI_CROWN} Особенности:")
-        lines.append(_feature_lines(car.features))
-        lines.append("")
+    # Characteristics block
+    if ci.is_electric:
+        # EV format
+        if ci.motor_power_hp:
+            segments.append(("— электромотор: ", False))
+            segments.append((f"{ci.motor_power_hp} л.с.\n", True))
+        if ci.battery_kwh:
+            segments.append(("— батарея: ", False))
+            segments.append((f"{ci.battery_kwh} kWh\n", True))
+        if ci.range_km:
+            segments.append(("— заявленный запас хода: ", False))
+            segments.append((f"{ci.range_km} км\n", True))
+        if ci.mileage:
+            segments.append(("— пробег: ", False))
+            segments.append((f"{ci.mileage}\n", True))
+        if ci.body_type:
+            segments.append(("— кузов: ", False))
+            segments.append((f"{ci.body_type}\n", True))
+        if ci.trim:
+            segments.append(("— комплектация: ", False))
+            segments.append((f"{ci.trim}\n", True))
+        if ci.condition:
+            segments.append(("— состояние: ", False))
+            segments.append((f"{ci.condition}\n", True))
+    else:
+        # ICE format (KEEP EXACTLY AS IS)
+        segments.append(("— двигатель: ", False))
+        segments.append((f"{ci.engine}\n", True))
+        if ci.mileage:
+            segments.append(("— пробег: ", False))
+            segments.append((f"{ci.mileage}\n", True))
+        if ci.trim:
+            segments.append(("— комплектация: ", False))
+            segments.append((f"{ci.trim}\n", True))
+        if ci.condition:
+            segments.append(("— состояние: ", False))
+            segments.append((f"{ci.condition}\n", True))
 
-    lines.append(f"{EMOJI_FIRE} Цена: {car.display_price(price_addition)}")
+    # Flags / notes
+    if ci.flags:
+        segments.append(("\n" + ci.flags + "\n", False))
 
-    if contact:
-        lines.append("")
-        lines.append(f"{EMOJI_PHONE} Контакт: {contact}")
+    # Prices
+    segments.append(("\n", False))
+    if ci.price_ussuriisk:
+        total = ci.price_ussuriisk + rub_bonus
+        price_str = f"{total:,}".replace(",", " ") + " ₽\n"
+        segments.append((f"{EMOJI_MONEY} Уссурийск: ", False))
+        segments.append((price_str, True))
+    if ci.price_moscow:
+        total = ci.price_moscow + rub_bonus
+        price_str = f"{total:,}".replace(",", " ") + " ₽\n"
+        segments.append((f"{EMOJI_MONEY} Москва: ", False))
+        segments.append((price_str, True))
 
-    return "\n".join(line for line in lines if line is not None)
+    # Contact
+    if manager_handle:
+        segments.append(("\n", False))
+        segments.append((f"{EMOJI_PHONE} {manager_handle}\n", False))
 
+    # Build full text and entity list
+    full_text = ""
+    entities: List[Dict[str, Any]] = []
+    for seg_text, is_bold in segments:
+        if not seg_text:
+            continue
+        if is_bold and seg_text.strip():
+            offset = utf16_len(full_text)
+            length = utf16_len(seg_text)
+            if length > 0:
+                entities.append(build_entity("bold", offset, length))
+        full_text += seg_text
 
-def format_post_ice(car: CarInfo, price_addition: int, contact: str) -> str:
-    """Format a Telegram post for an ICE vehicle."""
-    title = f"{EMOJI_CAR} {car.year} {car.make} {car.model}"
-    if car.trim:
-        title += f" {car.trim}"
-
-    engine_str = ""
-    if car.engine:
-        engine_str = car.engine
-        if car.fuel_type:
-            engine_str += f" ({car.fuel_type})"
-
-    lines = [
-        title,
-        "",
-        f"{EMOJI_SPARKLES} {car.slogan}",
-        "",
-        f"{EMOJI_WRENCH} Двигатель: {engine_str}" if engine_str else "",
-        f"{EMOJI_SPEED} Мощность: {car.power_hp} л.с." if car.power_hp else "",
-        f"{EMOJI_CAR} Кузов: {car.body_type}" if car.body_type else "",
-        "",
-    ]
-
-    if car.features:
-        lines.append(f"{EMOJI_STAR} Особенности:")
-        lines.append(_feature_lines(car.features))
-        lines.append("")
-
-    lines.append(f"{EMOJI_MONEY} Цена: {car.display_price(price_addition)}")
-
-    if contact:
-        lines.append("")
-        lines.append(f"{EMOJI_PHONE} Контакт: {contact}")
-
-    return "\n".join(line for line in lines if line is not None)
-
-
-def format_post(car: CarInfo, price_addition: int, contact: str) -> str:
-    """Dispatch to EV or ICE formatter based on vehicle type."""
-    if car.is_electric:
-        return format_post_ev(car, price_addition, contact)
-    return format_post_ice(car, price_addition, contact)
-
-
-def detect_ev_keywords(text: str) -> bool:
-    """Return True if text mentions EV-specific keywords."""
-    keywords = [
-        "электромобиль",
-        "kwh",
-        "кВт·ч",
-        "запас хода",
-        "батарея",
-        "электро",
-        "bev",
-        "ev",
-    ]
-    lower = text.lower()
-    # Use word-boundary-aware check for short tokens like "ev"
-    return any(
-        re.search(r"\b" + re.escape(kw) + r"\b", lower) if len(kw) <= 3 else kw in lower
-        for kw in keywords
-    )
+    return full_text, entities
 
 
 # ---------------------------------------------------------------------------
@@ -688,12 +722,8 @@ async def process_photos(
         return
 
     # Analyze with GPT
-    extra_hint = extra_text
-    if detect_ev_keywords(extra_text):
-        extra_hint += " [ЭЛЕКТРОМОБИЛЬ]"
-
     analyzer = ChatGPTAnalyzer(config.openai_api_key)
-    car = await analyzer.analyze_photos(photos_bytes, extra_hint=extra_hint)
+    car = await analyzer.analyze_car(photos_bytes, extra_hint=extra_text)
 
     if car is None:
         await status_msg.edit_text(
@@ -701,21 +731,29 @@ async def process_photos(
         )
         return
 
-    if car.has_vin:
-        await status_msg.edit_text(
-            f"⚠️ На фото обнаружен VIN-номер или гос. номер.\n"
-            f"По соображениям конфиденциальности публикация заблокирована.\n"
-            f"Пожалуйста, сделайте фото без регистрационных данных."
-        )
-        return
+    # Filter out photos with VIN/plate numbers (don't block — just remove those photos)
+    if car.vin_photo_indices:
+        photo_ids = [
+            fid for i, fid in enumerate(photo_ids)
+            if i not in car.vin_photo_indices
+        ]
+        if not photo_ids:
+            await status_msg.edit_text(
+                "⚠️ Все фотографии содержат VIN-номер или гос. номер.\n"
+                "Пожалуйста, добавьте фото без регистрационных данных."
+            )
+            return
 
-    # Generate post text
-    post_text = format_post(car, config.rub_bonus, config.manager_handle)
+    # Build caption with Telegram entities
+    post_text, post_entities = build_caption_with_entities(
+        car, config.manager_handle, config.rub_bonus
+    )
 
     # Store pending post
     post_key = f"{chat_id}_{int(time.monotonic() * 1000)}"
     pending_posts[post_key] = {
         "text": post_text,
+        "entities": post_entities,
         "photo_ids": photo_ids,
         "car": car,
     }
@@ -723,7 +761,7 @@ async def process_photos(
     # Send preview
     vehicle_label = f"{EMOJI_LIGHTNING} Электромобиль" if car.is_electric else f"{EMOJI_CAR} Автомобиль"
     preview_header = (
-        f"{vehicle_label} распознан: {car.year} {car.make} {car.model}\n"
+        f"{vehicle_label} распознан: {car.title}\n"
         f"Комплектация: {car.trim or 'неизвестна'}\n\n"
         f"Предварительный просмотр поста:"
     )
@@ -736,13 +774,18 @@ async def process_photos(
             chat_id=chat_id,
             photo=photo_ids[0],
             caption=post_text,
+            caption_entities=post_entities,
             reply_markup=make_confirm_keyboard(post_key),
         )
     else:
         from aiogram.types import InputMediaPhoto
 
         media = [
-            InputMediaPhoto(media=fid, caption=post_text if i == 0 else None)
+            InputMediaPhoto(
+                media=fid,
+                caption=post_text if i == 0 else None,
+                caption_entities=post_entities if i == 0 else None,
+            )
             for i, fid in enumerate(photo_ids[:10])
         ]
         await bot.send_media_group(chat_id=chat_id, media=media)
@@ -827,6 +870,7 @@ async def callback_publish(callback: CallbackQuery, bot: Bot) -> None:
 
     photo_ids: List[str] = post["photo_ids"]
     post_text: str = post["text"]
+    post_entities: List[Dict[str, Any]] = post.get("entities", [])
 
     try:
         if len(photo_ids) == 1:
@@ -834,12 +878,17 @@ async def callback_publish(callback: CallbackQuery, bot: Bot) -> None:
                 chat_id=config.channel_id,
                 photo=photo_ids[0],
                 caption=post_text,
+                caption_entities=post_entities,
             )
         else:
             from aiogram.types import InputMediaPhoto
 
             media = [
-                InputMediaPhoto(media=fid, caption=post_text if i == 0 else None)
+                InputMediaPhoto(
+                    media=fid,
+                    caption=post_text if i == 0 else None,
+                    caption_entities=post_entities if i == 0 else None,
+                )
                 for i, fid in enumerate(photo_ids[:10])
             ]
             await bot.send_media_group(chat_id=config.channel_id, media=media)
