@@ -8,10 +8,10 @@ import asyncio
 import base64
 import json
 import logging
-import os
 import re
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import aiohttp
@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 # Config file path
 # ---------------------------------------------------------------------------
 
-CONFIG_FILE = "bot_config.json"
+CONFIG_FILE = Path("bot_config.json")
 
 # ---------------------------------------------------------------------------
 # FSM States
@@ -49,11 +49,10 @@ CONFIG_FILE = "bot_config.json"
 
 
 class ConfigStates(StatesGroup):
-    waiting_for_token = State()
-    waiting_for_openai_key = State()
-    waiting_for_channel_id = State()
-    waiting_for_price_addition = State()
-    waiting_for_contact = State()
+    waiting_telegram_token = State()
+    waiting_openai_key = State()
+    waiting_channel_id = State()
+    confirm_settings = State()
 
 
 # ---------------------------------------------------------------------------
@@ -63,54 +62,41 @@ class ConfigStates(StatesGroup):
 
 @dataclass
 class BotConfig:
-    bot_token: str = ""
+    telegram_token: str = ""
     openai_api_key: str = ""
     channel_id: str = ""
-    price_addition: int = 120_000
-    contact: str = ""
-    admin_ids: List[int] = field(default_factory=list)
+    manager_handle: str = "@zera_mgmt"
+    rub_bonus: int = 120_000
 
-    def is_complete(self) -> bool:
-        return bool(self.bot_token and self.openai_api_key and self.channel_id)
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "bot_token": self.bot_token,
-            "openai_api_key": self.openai_api_key,
-            "channel_id": self.channel_id,
-            "price_addition": self.price_addition,
-            "contact": self.contact,
-            "admin_ids": self.admin_ids,
-        }
+    def save(self) -> None:
+        CONFIG_FILE.write_text(
+            json.dumps(
+                {
+                    "telegram_token": self.telegram_token,
+                    "openai_api_key": self.openai_api_key,
+                    "channel_id": self.channel_id,
+                    "manager_handle": self.manager_handle,
+                    "rub_bonus": self.rub_bonus,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "BotConfig":
-        cfg = cls()
-        cfg.bot_token = data.get("bot_token", "")
-        cfg.openai_api_key = data.get("openai_api_key", "")
-        cfg.channel_id = data.get("channel_id", "")
-        cfg.price_addition = int(data.get("price_addition", 120_000))
-        cfg.contact = data.get("contact", "")
-        cfg.admin_ids = [int(x) for x in data.get("admin_ids", [])]
-        return cfg
-
-
-def load_config() -> BotConfig:
-    if os.path.exists(CONFIG_FILE):
+    def load(cls) -> "BotConfig":
+        if not CONFIG_FILE.exists():
+            return cls()
         try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as fh:
-                return BotConfig.from_dict(json.load(fh))
+            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            return cls(**data)
         except Exception as exc:
             logger.warning("Cannot read config: %s", exc)
-    return BotConfig()
+            return cls()
 
-
-def save_config(cfg: BotConfig) -> None:
-    try:
-        with open(CONFIG_FILE, "w", encoding="utf-8") as fh:
-            json.dump(cfg.to_dict(), fh, ensure_ascii=False, indent=2)
-    except Exception as exc:
-        logger.error("Cannot save config: %s", exc)
+    def is_configured(self) -> bool:
+        return bool(self.telegram_token and self.openai_api_key)
 
 
 # ---------------------------------------------------------------------------
@@ -498,7 +484,7 @@ album_storage = AlbumStorage()
 # Global config & router
 # ---------------------------------------------------------------------------
 
-config: BotConfig = load_config()
+config: BotConfig = BotConfig.load()
 router = Router()
 
 # ---------------------------------------------------------------------------
@@ -570,8 +556,8 @@ async def cmd_status(message: Message) -> None:
         f"{EMOJI_WRENCH} Текущие настройки:",
         "",
         f"Канал: {cfg.channel_id or 'не задан'}",
-        f"Надбавка к цене: +{cfg.price_addition:,} ₽".replace(",", " "),
-        f"Контакт: {cfg.contact or 'не задан'}",
+        f"Надбавка к цене: +{cfg.rub_bonus:,} ₽".replace(",", " "),
+        f"Менеджер: {cfg.manager_handle or 'не задан'}",
         f"OpenAI ключ: {'✅ задан' if cfg.openai_api_key else '❌ не задан'}",
     ]
     await message.answer("\n".join(lines))
@@ -584,68 +570,49 @@ async def cmd_status(message: Message) -> None:
 
 @router.message(Command("setup"))
 async def cmd_setup(message: Message, state: FSMContext) -> None:
-    await state.set_state(ConfigStates.waiting_for_openai_key)
+    await state.set_state(ConfigStates.waiting_telegram_token)
     await message.answer(
         f"{EMOJI_WRENCH} Настройка бота.\n\n"
-        f"Шаг 1/4: Введите ваш OpenAI API ключ (sk-...):\n"
+        f"Шаг 1/3: Введите Telegram Bot Token (получить у @BotFather):\n"
         f"(Отправьте /skip чтобы оставить текущее значение)"
     )
 
 
-@router.message(StateFilter(ConfigStates.waiting_for_openai_key))
+@router.message(StateFilter(ConfigStates.waiting_telegram_token))
+async def setup_telegram_token(message: Message, state: FSMContext) -> None:
+    if message.text and message.text.strip() != "/skip":
+        config.telegram_token = message.text.strip()
+        config.save()
+    await state.set_state(ConfigStates.waiting_openai_key)
+    await message.answer(
+        f"Шаг 2/3: Введите ваш OpenAI API ключ (sk-...):\n"
+        f"(Отправьте /skip чтобы оставить текущее значение)"
+    )
+
+
+@router.message(StateFilter(ConfigStates.waiting_openai_key))
 async def setup_openai_key(message: Message, state: FSMContext) -> None:
     if message.text and message.text.strip() != "/skip":
         config.openai_api_key = message.text.strip()
-        save_config(config)
-    await state.set_state(ConfigStates.waiting_for_channel_id)
+        config.save()
+    await state.set_state(ConfigStates.waiting_channel_id)
     await message.answer(
-        f"Шаг 2/4: Введите ID или username канала для публикации\n"
+        f"Шаг 3/3: Введите ID или username канала для публикации\n"
         f"(например: @my_channel или -1001234567890)\n"
         f"(Отправьте /skip чтобы оставить текущее значение)"
     )
 
 
-@router.message(StateFilter(ConfigStates.waiting_for_channel_id))
+@router.message(StateFilter(ConfigStates.waiting_channel_id))
 async def setup_channel_id(message: Message, state: FSMContext) -> None:
     if message.text and message.text.strip() != "/skip":
         config.channel_id = message.text.strip()
-        save_config(config)
-    await state.set_state(ConfigStates.waiting_for_price_addition)
-    await message.answer(
-        f"Шаг 3/4: Введите надбавку к цене в рублях\n"
-        f"(по умолчанию: 120000)\n"
-        f"(Отправьте /skip чтобы оставить текущее значение)"
-    )
-
-
-@router.message(StateFilter(ConfigStates.waiting_for_price_addition))
-async def setup_price_addition(message: Message, state: FSMContext) -> None:
-    if message.text and message.text.strip() != "/skip":
-        try:
-            config.price_addition = int(message.text.strip().replace(" ", "").replace(",", ""))
-            save_config(config)
-        except ValueError:
-            await message.answer("Неверный формат числа. Попробуйте ещё раз.")
-            return
-    await state.set_state(ConfigStates.waiting_for_contact)
-    await message.answer(
-        f"Шаг 4/4: Введите контактную информацию для поста\n"
-        f"(например: @username или +7 900 000 00 00)\n"
-        f"(Отправьте /skip чтобы оставить текущее значение)"
-    )
-
-
-@router.message(StateFilter(ConfigStates.waiting_for_contact))
-async def setup_contact(message: Message, state: FSMContext) -> None:
-    if message.text and message.text.strip() != "/skip":
-        config.contact = message.text.strip()
-        save_config(config)
+        config.save()
     await state.clear()
     await message.answer(
         f"{EMOJI_CHECK} Настройки сохранены!\n\n"
         f"Канал: {config.channel_id or 'не задан'}\n"
-        f"Надбавка: +{config.price_addition:,} ₽\n".replace(",", " ") +
-        f"Контакт: {config.contact or 'не задан'}\n"
+        f"Менеджер: {config.manager_handle}\n"
         f"OpenAI: {'✅' if config.openai_api_key else '❌'}"
     )
 
@@ -743,7 +710,7 @@ async def process_photos(
         return
 
     # Generate post text
-    post_text = format_post(car, config.price_addition, config.contact)
+    post_text = format_post(car, config.rub_bonus, config.manager_handle)
 
     # Store pending post
     post_key = f"{chat_id}_{int(time.monotonic() * 1000)}"
@@ -915,17 +882,29 @@ async def handle_plain_text(message: Message) -> None:
 
 
 async def main() -> None:
-    cfg = load_config()
+    config = BotConfig.load()
 
-    token = cfg.bot_token or os.environ.get("BOT_TOKEN", "")
-    if not token:
-        logger.error(
-            "Bot token is not set. Provide it via bot_config.json (bot_token) "
-            "or BOT_TOKEN environment variable."
-        )
+    if not config.is_configured():
+        logger.warning("Bot is not configured. Starting in setup mode...")
+        temp_token = input("Введи временный Telegram токен для первой настройки: ").strip()
+        bot = Bot(token=temp_token)
+        storage = MemoryStorage()
+        dp = Dispatcher(storage=storage)
+
+        dp.message.register(cmd_setup, F.text == "/setup")
+        dp.message.register(cmd_start, F.text == "/start")
+        dp.message.register(setup_telegram_token, ConfigStates.waiting_telegram_token)
+        dp.message.register(setup_openai_key, ConfigStates.waiting_openai_key)
+        dp.message.register(setup_channel_id, ConfigStates.waiting_channel_id)
+
+        logger.info("🔧 Setup mode started. Use /setup command")
+        try:
+            await dp.start_polling(bot, allowed_updates=["message"])
+        finally:
+            await bot.session.close()
         return
 
-    bot = Bot(token=token)
+    bot = Bot(token=config.telegram_token)
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
     dp.include_router(router)
